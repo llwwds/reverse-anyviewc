@@ -176,14 +176,26 @@ def fetch_orders(questions, only_eid=None, limit=None, redo=False, record=None,
     return out, skipped
 
 
-def brief_error(error_order):
+def brief_error(error_order, data=None):
     """把 runGroup 的 errorOrder 压成一句话，直接写进台账。
 
     这是「编译过但判题不过」的唯一可靠线索：平台逐用例给出
     「正确结果 vs 你的结果」的字节级对照。以前要手工 dump 才知道，
     现在让它自动进台账，失败原因一眼可见。
+
+    errorOrder 为空时回落取 data.result / data.message —— 程序运行时崩溃、
+    段错误、输出为空这类情况平台不填 errorOrder，只把文本放在 result 里。
     """
     if not error_order:
+        data = data or {}
+        for key in ("result", "message", "msg"):
+            txt = str(data.get(key) or "").strip()
+            if txt:
+                txt = re.sub(r"<br\s*/?>", " | ", txt)
+                txt = re.sub(r"&nbsp;", " ", txt)
+                txt = re.sub(r"<[^>]+>", "", txt)
+                txt = re.sub(r"\s*\|\s*(\||)+", " | ", txt)
+                return re.sub(r"\s+", " ", txt).strip(" |")[:1000]
         return ""
     # errorOrder 的 key 是用例序号，取第一个失败的
     key = sorted(error_order, key=lambda x: (len(str(x)), str(x)))[0]
@@ -252,7 +264,7 @@ def do_one(tk, eid, answers, extras, min_wait, max_wait, quiet=False):
         "passed": passed,
         "wait": wait,
         "runRight": d.get("runRightCount"),
-        "reason": "" if passed else brief_error(d.get("errorOrder")),
+        "reason": "" if passed else brief_error(d.get("errorOrder"), d),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 

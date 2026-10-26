@@ -153,7 +153,7 @@ $PY tools/submit.py --eid <eid> --all
 | `assemble.py` | 按函数名替换函数体，辅助函数前置插入 | 无 |
 | `answers_build.py` | 批量产出答案文件并做语法校验 | 无 |
 | `submit.py` | 保存 / 编译 / 判题三件套 + 状态查询；传输层失败自动重试并回落直连 | curl |
-| `triage.py` | 失败题分诊：批量只编译不判题，区分「编译不过」与「判题输出不对」 | curl |
+| `triage.py` | 失败题分诊：批量只编译不判题；`--errors` 直接读平台留存的完整 errorOrder（只 GET，不消耗判题） | curl |
 | `exam_drive.py` | 按拟人节奏批量跑，台账支持断点续跑 | curl |
 | `doctor.py` | 10 项环境自检，只读 | curl + urllib |
 

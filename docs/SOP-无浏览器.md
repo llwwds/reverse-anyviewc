@@ -159,7 +159,9 @@ $PY tools/exam_drive.py --run --limit 3                          # 先跑 3 题
 
 `--status` 里 `exerciseStatus=2` 即「已通过」。
 
-### S5 · 核验
+### S5 · 核验与分诊
+
+单题核验：
 
 ```bash
 $PY tools/submit.py --eid <eid> --status
@@ -167,6 +169,37 @@ $PY tools/submit.py --eid <eid> --status
 
 看四个字段：`exerciseStatus=2`、`firstPastTime` 非空、`cmpRightCount/cmpCount` 满、`runRightCount > 0`。
 批量结果落在 `提交记录.json`，可随时断点续跑。
+
+批量跑完之后，**先分诊再动手改**：
+
+```bash
+$PY tools/triage.py --failed                 # 只编译不判题，分类打印
+$PY tools/triage.py --failed --errors        # 直接读平台留存的完整 errorOrder（纯 GET）
+$PY tools/triage.py --eid <eid> --show-src   # 单题 + 拼装后的源码
+```
+
+`--errors` 是从状态接口读 `data.exercise.errorOrder` —— 平台把最近一次判题失败
+逐用例的「正确结果 vs 你的结果」完整存在那里，只读一次就有，不用重新判题。
+排查失败题的第一动作应该是它，而不是重跑。
+
+分诊只调 `compile`，不调 `runGroup`，所以不改变题目状态、不留判题痕迹，可以反复跑。
+
+| 分诊结论 | 含义 | 该改哪儿 |
+|---|---|---|
+| 编译失败 | 拼装产物过不了编译器 | 先看是不是 `redefinition` / `conflicting declaration`（模板被污染或重复 typedef），再考虑答案代码 |
+| 编译通过 | 代码能跑，输出与标准答案不一致 | 看台账 `reason`（已内置 `errorOrder` 摘要），按「正确结果 vs 你的结果」逐字节对齐 |
+| 保存失败 | `saved=false` | token 被顶或网络问题，先 `login.py` / 重试，不要动答案 |
+
+修完重跑同一批即可，`exam_drive` 只会挑台账里没通过的题：
+
+```bash
+./tools/run_submit.sh --min 60 --max 300
+```
+
+**两条反直觉的教训（都踩过）：**
+
+- 拼装要幂等。提交过之后平台里的 `stuCode` 就是你自己写的代码，拿它当骨架会把自己的旧代码带进来，前置片段插两遍 → 编译期 `redefinition`。本仓库固定用原始模板。
+- 题目说「以下函数可以直接调用」的，连声明都别写。手写原型的按值/按引用不一致，得到的是 `undefined reference` 而不是编译错。
 
 ---
 
