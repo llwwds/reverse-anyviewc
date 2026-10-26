@@ -60,9 +60,9 @@ ego-browser 在整个项目里只干过两件事，**都不是运行时的活**�
 |---|---|---|
 | 解释器 | Python ≥ 3.8，且**能 `import rsa`** | 只有登录需要；宿主机自带 python3 常缺 |
 | curl | 存在即可，默认 `/usr/bin/curl` | 写接口唯一稳妥通道 |
-| 数据根 | 存放题库 / 答案 / 台账的目录 | 默认 `~/Downloads/AnyView题库`，用 `ANYVIEW_DATA_DIR` 覆盖 |
+| 数据根 | 存放题库 / 答案 / 台账的目录 | 默认仓库内 `local-data/`，被 `.gitignore` 排除；用 `ANYVIEW_DATA_DIR` 可指到别处 |
 
-**代码与数据分离**：本仓库只放代码；题库、答案、提交台账这些运行期数据留在数据根，不进版本库（见 `.gitignore`）。所有脚本通过 `tools/paths.py` 统一解析路径，不硬编码任何位置。
+**代码与数据分离**：本仓库只放代码；题库、答案、提交台账、token 这些运行期数据统一放 `local-data/`，该目录整体不进版本库（`.gitignore` 里 `local-data/*`，只放行一份说明 README）。所有脚本通过 `tools/paths.py` 统一解析路径，不硬编码任何位置。
 
 准备解释器（隔离 venv，不污染系统）：
 
@@ -76,7 +76,8 @@ python3 -m venv ~/.venvs/anyview
 ```bash
 git clone <本仓库地址> reverse-anyviewc && cd reverse-anyviewc
 export PY=<能 import rsa 的 python>            # 例：~/.venvs/anyview/bin/python
-export ANYVIEW_DATA_DIR=~/Downloads/AnyView题库  # 数据根，按实际布局改
+mkdir -p local-data                            # 数据根默认就在仓库内，鲜少需要改
+# 要换位置才设：export ANYVIEW_DATA_DIR=/path/to/data
 ```
 
 系统 `/usr/bin/python3` 若 `import rsa` 报 `ModuleNotFoundError`，别硬用，换 `$PY`。
@@ -112,8 +113,8 @@ ANYVIEW_USER=<学号> ANYVIEW_PASS='<密码>' $PY tools/login.py
 $PY tools/crawl.py
 ```
 
-产出落在数据根：`原始数据/schemes.json`、`catalog_*.json`、`q_<eid>.json`、`_manifest.json`。
-已存在的 `q_<eid>.json` 会跳过，可安全重跑（增量）。token 由脚本自动从 `$ANYVIEW_DATA_DIR/.token` 或 `ANYVIEW_TOKEN` 读取，不必手动传。
+产出落在数据根（默认 `local-data/`）：`原始数据/schemes.json`、`catalog_*.json`、`q_<eid>.json`、`_manifest.json`。
+已存在的 `q_<eid>.json` 会跳过，可安全重跑（增量）。token 由脚本自动从 `<数据根>/.token` 或 `ANYVIEW_TOKEN` 读取，不必手动传。
 
 > 注意：`crawl.py` 用 `urllib`，`submit.py` 用 `curl`。若某天 `doctor.py` 报 `urllib 通道` 失败，
 > 说明 WAF 开始拦 Python 原生 TLS，此时把 `crawl.py` 的 `api()` 换成 curl 子进程即可（见 §6）。
@@ -121,8 +122,8 @@ $PY tools/crawl.py
 ### S3 · 答案与拼装
 
 ```bash
-$PY tools/assemble.py --all --out-dir "$ANYVIEW_DATA_DIR/提交源码"   # 全量成品 .c
-$PY tools/assemble.py --eid <eid> --verify                            # 单题语法自检
+$PY tools/assemble.py --all --out-dir local-data/提交源码   # 全量成品 .c
+$PY tools/assemble.py --eid <eid> --verify                  # 单题语法自检
 ```
 
 规则（`assemble.py` 已实现，改答案时照此遵守）：

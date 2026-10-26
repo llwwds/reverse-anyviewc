@@ -62,6 +62,8 @@ reverse-anyviewc/
 ├── docs/
 │   ├── SOP-无浏览器.md      # 主体：五阶段 SOP + 依赖边界 + 降级链
 │   └── 接口契约.md          # 三个写接口的 Content-Type / 字段 / 响应
+├── local-data/              # 本地数据（.gitignore 排除，只留 README 作说明）
+│   └── README.md            # 数据目录约定：每个子目录放什么
 ├── tools/
 │   ├── paths.py             # 数据根定位（代码与数据解耦的核心）
 │   ├── login.py             # RSA 登录 → token
@@ -74,35 +76,56 @@ reverse-anyviewc/
 │   ├── submit.py            # 保存 / 编译 / 判题（单题）
 │   ├── exam_drive.py        # 批量拟人化驱动
 │   └── doctor.py            # 环境自检
+├── .githooks/
+│   └── pre-commit           # 兜底：local-data/ 只允许 README.md 入库
 └── .gitignore
 ```
 
-**本仓库不含**：账号凭据、题库原文、课程答案、提交记录。这些是运行期数据，放在你自己的数据目录（默认 `~/Downloads/AnyView题库`，可用 `ANYVIEW_DATA_DIR` 覆盖）。
+**本仓库不含**：账号凭据、题库原文、课程答案、提交记录。这些是运行期数据，统一放在 `local-data/`——该目录被 `.gitignore` 整体排除，只有一份 `README.md` 随仓库分发，用来说明各子目录该放什么。`ANYVIEW_DATA_DIR` 可把数据根指到别处。
+
+### 数据目录的两道防线
+
+`.gitignore` 只拦「常规 `git add`」；`git add -f` 能绕过它。数据目录就在仓库内，误 `-f` 的代价是题库与答案永久留在公开历史里，所以加了一道 pre-commit 兜底。clone 后启用一次：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+之后任何试图把 `local-data/` 下非 README 文件提交进来的操作都会被拒。自查：
+
+```bash
+git status --short                              # local-data/ 下只该出现 README.md
+git check-ignore -v local-data/答案/_src/ch01.py  # 应命中 local-data/* 规则
+```
 
 ## 快速开始
 
 ```bash
 git clone <本仓库地址> reverse-anyviewc && cd reverse-anyviewc
 
+# 0. 启用数据保护 hook（防 git add -f 误把数据提交上去）
+git config core.hooksPath .githooks
+
 # 1. 准备解释器（登录需要 rsa）
 python3 -m venv ~/.venvs/anyview
 ~/.venvs/anyview/bin/pip install rsa
 export PY=~/.venvs/anyview/bin/python
 
-# 2. 指向你的数据目录
-export ANYVIEW_DATA_DIR=~/Downloads/AnyView题库
+# 2. 数据根默认就是仓库内的 local-data/，一般不用设
+#    要改位置才需要：export ANYVIEW_DATA_DIR=/path/to/data
+mkdir -p local-data
 
 # 3. 自检 —— 退出码 0 就能干活
 $PY tools/doctor.py
 
-# 4. 登录（token 落在 $ANYVIEW_DATA_DIR/.token）
+# 4. 登录（token 落在 local-data/.token）
 ANYVIEW_USER=<学号> ANYVIEW_PASS='<密码>' $PY tools/login.py
 
 # 5. 抓题
 $PY tools/crawl.py
 
 # 6. 拼装 + 提交
-$PY tools/assemble.py --all --out-dir "$ANYVIEW_DATA_DIR/提交源码"
+$PY tools/assemble.py --all --out-dir local-data/提交源码
 $PY tools/submit.py --eid <eid> --all
 $PY tools/exam_drive.py --plan          # 批量前先看计划
 ```

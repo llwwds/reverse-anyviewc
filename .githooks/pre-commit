@@ -1,0 +1,28 @@
+#!/bin/sh
+# pre-commit 兜底：local-data/ 下除 README.md 外一律不许入库。
+#
+# .gitignore 只在「常规 add」时生效；`git add -f` 能绕过它。
+# 数据目录就在仓库内，误 -f 的代价是题库与答案永久留在公开历史里，
+# 所以这里再挡一层。启用方式（clone 后跑一次）：
+#   git config core.hooksPath .githooks
+#
+# 确实需要临时绕过时： git commit --no-verify
+
+# core.quotePath=false 是必需的：数据子目录名是中文，git 默认会把非 ASCII 路径
+# 转成 "local-data/\347\255\224..." 的八进制转义并加引号，
+# 导致下面的 `grep '^local-data/'` 前缀匹配全部落空、hook 静默放行。
+blocked=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM \
+    | grep '^local-data/' \
+    | grep -v '^local-data/README\.md$')
+
+if [ -n "$blocked" ]; then
+    echo "✗ 提交被拒绝：local-data/ 只允许 README.md 入库，以下文件被发现：" >&2
+    echo "$blocked" | sed 's/^/    /' >&2
+    echo "" >&2
+    echo "  处理方式：" >&2
+    echo "    git rm --cached <上面的文件>     # 从暂存区移除，磁盘文件保留" >&2
+    echo "    git commit --no-verify           # 确实需要提交时绕过本检查" >&2
+    exit 1
+fi
+
+exit 0

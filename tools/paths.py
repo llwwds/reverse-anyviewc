@@ -3,17 +3,19 @@
 """
 数据根定位 —— 让「代码」与「数据」解耦。
 
-本仓库只放代码。题库、答案、提交记录这些运行期数据留在你自己的数据目录里，
-不进仓库（见 .gitignore）。所有脚本统一从这里取路径，不要在别处硬编码。
+本仓库只放代码。题库、答案、提交记录这些运行期数据放在仓库内的 local-data/，
+该目录被 .gitignore 整体排除，永不进版本库。
 
-解析顺序：
-    ANYVIEW_DATA_DIR 环境变量
-    → 默认 ~/Downloads/AnyView题库
+解析顺序（先到先得）：
+    1. ANYVIEW_DATA_DIR 环境变量
+    2. <仓库根>/local-data        （推荐位置，目录存在即用）
+    3. ~/Downloads/AnyView题库     （旧位置，兼容早期部署）
+    4. 兜底返回 <仓库根>/local-data （目录不存在时给调用方一个可创建的路径）
 
 token 解析顺序：
     ANYVIEW_TOKEN 环境变量
     → <数据根>/.token
-    → <数据根>/工具/.token（兼容旧布局）
+    → <数据根>/工具/.token（兼容极早期布局）
 
 用法:
     from paths import data_root, token_path
@@ -22,7 +24,12 @@ token 解析顺序：
 import os
 from pathlib import Path
 
-DEFAULT_DATA_ROOT = Path.home() / "Downloads" / "AnyView题库"
+# tools/paths.py → tools/ → 仓库根
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent
+
+DEFAULT_DATA_ROOT = REPO_ROOT / "local-data"
+LEGACY_DATA_ROOT = Path.home() / "Downloads" / "AnyView题库"
 
 # 数据根下的约定子路径
 RAW_DIR = "原始数据"
@@ -38,6 +45,10 @@ def data_root() -> Path:
     env = os.environ.get("ANYVIEW_DATA_DIR", "").strip()
     if env:
         return Path(env).expanduser().resolve()
+    if DEFAULT_DATA_ROOT.is_dir():
+        return DEFAULT_DATA_ROOT
+    if LEGACY_DATA_ROOT.is_dir():
+        return LEGACY_DATA_ROOT
     return DEFAULT_DATA_ROOT
 
 

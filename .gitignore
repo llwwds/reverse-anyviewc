@@ -1,20 +1,20 @@
-# ---- 运行期数据（不进版本库） ----
-# 数据根默认在 ~/Downloads/AnyView题库，若你把仓库当数据目录用，
-# 下面这些规则会把数据挡在版本库外。
+# ---- 本地数据（整体不进版本库） ----
+# 题库原文、解法源码、提交记录、token 一律留在 local-data/，永不入库。
+# 只放行该目录的说明文件，让 clone 下来的人知道数据该往哪儿放。
+local-data/*
+!local-data/README.md
 
-# token / 凭据
+# 兜底：数据目录被 ANYVIEW_DATA_DIR 指到别处时，这些规则仍然拦得住
 .token
 *.token
 .env
 .env.*
-
-# 题库与答案
 题库/
 答案/
 原始数据/
-out/
 提交源码/
 提交记录.json
+out/
 *.answers.json
 
 # ---- Python ----
