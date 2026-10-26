@@ -75,6 +75,7 @@ reverse-anyviewc/
 │   ├── answers_build.py     # 批量生成答案文件
 │   ├── submit.py            # 保存 / 编译 / 判题（单题）
 │   ├── exam_drive.py        # 批量拟人化驱动
+│   ├── run_submit.sh        # 一键启动：间隔抖动 + 单实例锁 + 日志 + status/stop
 │   └── doctor.py            # 环境自检
 ├── .githooks/
 │   └── pre-commit           # 兜底：local-data/ 只允许 README.md 入库
@@ -127,7 +128,12 @@ $PY tools/crawl.py
 # 6. 拼装 + 提交
 $PY tools/assemble.py --all --out-dir local-data/提交源码
 $PY tools/submit.py --eid <eid> --all
-$PY tools/exam_drive.py --plan          # 批量前先看计划
+
+# 7. 一键批量（每题间隔 60~300 秒抖动，单实例保护，可随时中断续跑）
+./tools/run_submit.sh --plan      # 先看计划与预估时长
+./tools/run_submit.sh             # 开跑
+./tools/run_submit.sh --status    # 进度
+./tools/run_submit.sh --stop      # 停
 ```
 
 完整流程与失败处置见 [docs/SOP-无浏览器.md](docs/SOP-无浏览器.md)。
@@ -137,6 +143,7 @@ $PY tools/exam_drive.py --plan          # 批量前先看计划
 | 工具 | 作用 | 网络 |
 |---|---|---|
 | `paths.py` | 统一解析数据根与 token 位置 | 无 |
+| `run_submit.sh` | 一键启动批量提交；间隔抖动、单实例锁、日志、状态查询 | 间接 |
 | `login.py` | RSA/PKCS1v15 加密登录，写 token（权限 600） | curl |
 | `crawl.py` | 拉课程表 → 题目目录 → 逐题详情，增量可重跑 | urllib |
 | `enrich.py` | 补 `difficulty` / `exerciseStatus` / `accumTime` 等 | urllib |

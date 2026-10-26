@@ -26,7 +26,9 @@
 """
 import argparse
 import base64
+import fcntl
 import json
+import os
 import random
 import re
 import sys
@@ -40,6 +42,35 @@ import submit as S      # noqa: E402
 
 ROOT = paths.data_root()
 RECORD = ROOT / "提交记录.json"
+LOCKFILE = ROOT / ".drive.lock"
+
+
+def acquire_single_instance():
+    """拿排他锁，保证全机同时只有一个驱动的实例。
+
+    用 fcntl.flock 而不是「PID 文件 + kill -0」：PID 文件会残留、会写错、
+    在受限环境里 ps/kill 还可能不可用；而 flock 由内核随进程存活自动释放，
+    进程被 kill -9、断网、断电都不会留下死锁。
+
+    返回的文件对象必须一直持有到进程结束，否则锁会被提前释放。
+    """
+    LOCKFILE.parent.mkdir(parents=True, exist_ok=True)
+    f = open(LOCKFILE, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            other = LOCKFILE.read_text(encoding="utf-8").strip()
+        except Exception:                              # noqa: BLE001
+            other = "?"
+        f.close()
+        print(f"已有实例在跑（PID {other or '?'}），本次不启动，避免两路同时提交。", file=sys.stderr)
+        print("  看进度：tools/run_submit.sh --status        停掉：tools/run_submit.sh --stop",
+              file=sys.stderr)
+        sys.exit(1)
+    f.write(str(os.getpid()))
+    f.flush()
+    return f
 
 
 def load_questions():
@@ -60,18 +91,19 @@ def save_record(rec):
 
 
 def plan_wait(src, min_wait, max_wait):
-    """估算这题「像人」要花多久。
+    """估算这题「像人」要花多久。结果保证落在 [min_wait, max_wait] 内。
 
-    以 min~max 区间为基准，按模板行数放大：短题（十来回行）取下限附近，
-    长题（几十行、含多个函数）放大到 1.6 倍。再加 ±20% 抖动，
-    让相邻两题的间隔不会整齐得像机器。
+    做法不是「先算一个值再 clamp」——那样会让大量样本堆在上下界，一眼看出
+    是压出来的。也不是按行数强分档——实测题量普遍 30~60 行，分档会把所有题
+    挤到区间上半区，120 题全落在 151~266s，比均匀更假。
+
+    折中：分位在 [0, 0.88] 上均匀撒，再按题量右移最多 0.12
+    （短题几乎从下限起，长题整体偏后）。覆盖整个 60~300，且长题系统性更久。
     """
     lines = len([l for l in src.split("\n") if l.strip()])
-    span = max(1, max_wait - min_wait)
-    base = min_wait + span * random.random()
-    scale = min(1.6, 0.55 + lines / 42.0)
-    jitter = 0.8 + 0.4 * random.random()
-    return max(10, int(base * scale * jitter))
+    frac = min(1.0, max(0.0, (lines - 12) / 30.0))   # 12 行以下=短题，42 行以上=长题
+    p = 0.88 * random.random() + 0.12 * frac
+    return int(round(min_wait + (max_wait - min_wait) * p))
 
 
 # 平台塞的占位返回，形如 `return NULL; //Temporary code. Modify it if necessary.`
@@ -116,7 +148,13 @@ def template_filled_by(eid):
 
 def fetch_orders(questions, only_eid=None, limit=None, redo=False, record=None,
                  skip_existing=True):
-    """按题库顺序排出待做的题。"""
+    """按题库顺序排出待做的题。
+
+    「模板里已有历史代码」的判定必须结合台账：一旦我们提交过一次（哪怕失败），
+    模板里就留下了我们自己的代码。若只看模板，这类题会被当成「你以前写过」
+    永久跳过，失败的题再也没有重试机会。所以**台账里有记录的一律不跳过**，
+    只跳过「模板有代码 且 我们从未碰过」的题。
+    """
     record = record or {}
     out = []
     skipped = []
@@ -124,9 +162,10 @@ def fetch_orders(questions, only_eid=None, limit=None, redo=False, record=None,
         eid = str(q["eid"])
         if only_eid and eid != str(only_eid):
             continue
-        if not redo and (record.get(eid) or {}).get("passed"):
+        rec = record.get(eid) or {}
+        if not redo and rec.get("passed"):
             continue
-        if skip_existing:
+        if skip_existing and not rec:
             who = template_filled_by(eid)
             if who:
                 skipped.append((q["pname"], eid, who))
@@ -248,10 +287,16 @@ def main():
     if not a.run:
         sys.exit("要么 --plan，要么 --run")
 
+    # 单实例锁：必须在真正落网络请求之前拿，避免两个人同时往同一账号提交
+    global _LOCK
+    _LOCK = acquire_single_instance()
+
     tk = S.token()
     print(f"开始，共 {len(orders)} 题\n" + "=" * 64, flush=True)
 
     done = ok = 0
+    consec_fail = 0        # 连续未通过
+    consec_nosave = 0      # 连续连「保存」都失败（基本是 token 挂了，不是答案错）
     t_start = time.time()
     for idx, q in enumerate(orders, 1):
         eid = str(q["eid"])
@@ -269,8 +314,12 @@ def main():
         done += 1
         if r.get("passed"):
             ok += 1
+            consec_fail = 0
+            consec_nosave = 0
             print(f"    通过（runRight={r.get('runRight')}, 停顿 {r.get('wait')}s）", flush=True)
         else:
+            consec_fail += 1
+            consec_nosave = consec_nosave + 1 if r.get("saved") is False else 0
             print(f"    未通过：{r.get('reason') or r}", flush=True)
 
         elapsed = time.time() - t_start
@@ -278,6 +327,17 @@ def main():
         left = avg * (len(orders) - done)
         print(f"    进度 {done}/{len(orders)}  通过 {ok}  "
               f"已耗时 {int(elapsed // 60)}分  预计剩余 {int(left // 60)}分", flush=True)
+
+        # 熔断：把「答案有 bug」和「token / 平台挂了」分开。
+        # 保存都写不进去，说明不是代码问题，继续跑只会把剩余题全刷成失败。
+        if consec_nosave >= 3:
+            print(f"\n连续 {consec_nosave} 题保存失败，token 可能已失效（单点登录被顶）。已中止。", flush=True)
+            print("  处理：$PY tools/login.py 重新登录，然后重跑本脚本，会从断点继续。", flush=True)
+            break
+        if consec_fail >= 8:
+            print(f"\n连续 {consec_fail} 题未通过，疑似答案或平台异常。已中止。", flush=True)
+            print("  处理：$PY tools/doctor.py 排查；单题用 submit.py --eid <eid> --all 复现。", flush=True)
+            break
 
     print("\n" + "=" * 64)
     print(f"结束：{done} 题，通过 {ok}，失败 {done - ok}")
