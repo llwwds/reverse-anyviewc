@@ -255,7 +255,20 @@ def assemble(template, answer, strip_comments=True, prelude_extra=""):
         blk = prelude_extra.strip("\n")
         if strip_comments:
             blk = strip_trailing_comments(blk)
-        prefixes.append("\n".join(l.rstrip() for l in blk.split("\n")).strip("\n"))
+        blk = "\n".join(l.rstrip() for l in blk.split("\n")).strip("\n")
+        # 幂等保护：模板里已经有同名函数 / typedef / 常量，就不再插一遍。
+        # 否则会拼出「redefinition of ...」——平台模板可能是别人（或我们上次）
+        # 已经写过的代码，重复定义必炸。
+        have = _defined_names(out)
+        kept = []
+        for ch in _prelude_chunks(blk):
+            syms = _defined_names(ch)
+            if syms and syms <= have:
+                continue
+            kept.append(ch)
+            have |= syms
+        if kept:
+            prefixes.append("\n\n".join(kept))
 
     tf_names = {f.name for f in tf}
     for f in af:
@@ -387,12 +400,65 @@ def load_src_extras():
     return out
 
 
-def build_one(eid, answers, tk=None, fetch=True, extras=None):
-    """取模板 + 取答案 → 拼装。返回 (源码, report, 元信息)。"""
-    det = S.get_question(tk, eid) if fetch else None
+def _defined_names(src):
+    """粗粒度收集一段 C 代码里「定义出来的名字」：函数名、typedef 名、静态常量、宏。"""
+    names = set()
+    for f in find_functions(src):
+        names.add(f.name)
+    for m in re.finditer(r"\btypedef\b[^;{}]*\{[^}]*\}\s*([A-Za-z_]\w*)"
+                         r"(?:\s*,\s*\*\s*([A-Za-z_]\w*))?\s*;", src, re.S):
+        names.add(m.group(1))
+        if m.group(2):
+            names.add(m.group(2))
+    for m in re.finditer(r"\btypedef\b\s+[^;{}]*?\b([A-Za-z_]\w*)\s*;", src):
+        names.add(m.group(1))
+    for m in re.finditer(r"\bstatic\s+const\s+\w+\s+([A-Za-z_]\w*)", src):
+        names.add(m.group(1))
+    for m in re.finditer(r"^\s*#define\s+([A-Za-z_]\w*)", src, re.M):
+        names.add(m.group(1))
+    return names
+
+
+def _prelude_chunks(text):
+    """把前置片段切成一个个顶层声明（以顶层 `;` 或 `}` 结尾）。"""
+    chunks, buf, depth = [], [], 0
+    for ch in text:
+        buf.append(ch)
+        if ch in "{(":
+            depth += 1
+        elif ch in "})":
+            depth = max(0, depth - 1)
+            if depth == 0 and ch == "}" and buf:
+                # `}` 可能后面还跟 `;`，先探一下再收尾
+                continue
+        elif ch == ";" and depth == 0:
+            chunks.append("".join(buf).strip())
+            buf = []
+    tail = "".join(buf).strip()
+    if tail:
+        chunks.append(tail)
+    return [c for c in chunks if c]
+
+
+def build_one(eid, answers, tk=None, fetch=True, extras=None, live=False):
+    """取模板 + 取答案 → 拼装。返回 (源码, report, 元信息)。
+
+    模板默认取**首次抓取时存档的原始模板**（原始数据/q_<eid>.json）。
+    不用平台当前 stuCode 当骨架 —— 提交过一次之后，平台里的 stuCode 就是
+    我们自己写进去的代码，再拿它当模板会把自己的旧代码当骨架带进来：
+    前置 typedef 与辅助函数重复定义，编译直接失败。踩过，见技术文档第十七章。
+    文件缺失才回落到线上取题（live=True 可强制走线上）。
+    """
+    det = None
+    if not live:
+        p = ROOT / "原始数据" / f"q_{eid}.json"
+        if p.exists():
+            blob = json.loads(p.read_text(encoding="utf-8"))
+            det = blob.get("detail") or {}
     if det is None:
-        blob = json.loads((ROOT / "原始数据" / f"q_{eid}.json").read_text(encoding="utf-8"))
-        det = blob.get("detail") or {}
+        det = S.get_question(tk, eid)
+    if det is None:
+        raise S.NetworkError(f"取题失败：{eid}")
 
     b64 = det.get("stuCode") or ""
     template = base64.b64decode(b64).decode("utf-8", "replace") if b64 else ""

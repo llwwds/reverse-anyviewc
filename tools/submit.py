@@ -36,10 +36,12 @@ import argparse
 import base64
 import json
 import os
+import random
 import re
 import subprocess
 import sys
 import tempfile
+import time
 
 import paths
 
@@ -49,6 +51,16 @@ CURL = "/usr/bin/curl"
 
 # ---------------------------------------------------------------- HTTP (curl)
 
+class NetworkError(RuntimeError):
+    """传输层失败（连不上、代理 502、超时）。与业务失败区分开，调用方可以重试。"""
+
+
+# curl 退出码：6/7=域名或连接失败，28=超时，35=SSL 握手，52/55/56=收发中断，18=数据不全
+CURL_RETRY_CODES = {6, 7, 18, 28, 35, 52, 55, 56}
+# 网关/代理层的临时错误，重试有意义；4xx 不重试
+HTTP_RETRY_CODES = {0, 429, 500, 502, 503, 504}
+
+
 def token():
     return paths.require_token()
 
@@ -57,8 +69,45 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
-def call(method, path, tk, eid=None, json_body=None, form=None, multipart=None):
-    """统一出口：拼 curl 参数、解析 JSON、检查 HTTP 状态。"""
+def call(method, path, tk, eid=None, json_body=None, form=None, multipart=None,
+         tries=5, tag=""):
+    """统一出口：拼 curl 参数、解析 JSON、检查 HTTP 状态。
+
+    传输层失败会重试而非直接退出 —— 批量提交要跑几小时，中间一次代理 502
+    不该让整个进程死掉。重试策略：
+
+        第 1 次  沿用环境变量里的代理（正常路径）
+        第 2 次起 换 --noproxy 直连（绕开不稳定的中间层）
+        间隔     1s → 2s → 4s → 8s，各加 ±30% 抖动
+
+    None 表示「传输层失败」以外的错误照旧抛出；重试耗尽抛 NetworkError，
+    由调用方决定是放弃这题还是中止整批。
+    """
+    last = ""
+    for attempt in range(tries):
+        direct = attempt > 0                    # 第一次走代理，之后直连
+        try:
+            status, body = _call_once(method, path, tk, eid, json_body, form,
+                                      multipart, direct)
+        except NetworkError as e:
+            status, body, last = None, None, str(e)
+        else:
+            if status not in HTTP_RETRY_CODES:
+                return status, body
+            last = f"HTTP {status}"
+
+        if attempt < tries - 1:
+            wait = min(30.0, (2 ** attempt) * random.uniform(0.7, 1.3))
+            print(f"    [网络重试 {attempt + 1}/{tries - 1}] {tag or path} 失败（{last}），"
+                  f"{wait:.0f}s 后{'直连' if attempt + 1 == 1 else '再试'}", flush=True)
+            time.sleep(wait)
+
+    raise NetworkError(f"{tag or path} 连续 {tries} 次失败，最后一次：{last}")
+
+
+def _call_once(method, path, tk, eid=None, json_body=None, form=None,
+               multipart=None, direct=False):
+    """发一次请求。传输失败抛 NetworkError，业务错误原样返回 (status, json)。"""
     args = ["-X", method, f"{BASE}{path}", "-H", f"token: {tk}",
             "-w", "\n__HTTP__%{http_code}", "-o", "-"]
     if eid:
@@ -80,19 +129,25 @@ def call(method, path, tk, eid=None, json_body=None, form=None, multipart=None):
             else:
                 args += ["-F", f"{k}={v}"]
 
-    cmd = [CURL, "-sS", "--max-time", "180",
-           "-H", f"User-Agent: {UA}",
-           "-H", "Accept: application/json, text/plain, */*",
-           "-H", "Origin: https://anyview.gdut.edu.cn",
-           "-H", "Referer: https://anyview.gdut.edu.cn/student/exercises"] + args
+    cmd = [CURL, "-sS", "--max-time", "120"]
+    if direct:
+        cmd += ["--noproxy", "*"]
+    cmd += ["-H", f"User-Agent: {UA}",
+            "-H", "Accept: application/json, text/plain, */*",
+            "-H", "Origin: https://anyview.gdut.edu.cn",
+            "-H", "Referer: https://anyview.gdut.edu.cn/student/exercises"] + args
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
                            input=json.dumps(json_body) if json_body is not None else None)
     finally:
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
+
+    if p.returncode in CURL_RETRY_CODES:
+        raise NetworkError(f"curl({p.returncode}) {p.stderr.strip()}")
     if p.returncode != 0:
-        sys.exit(f"[curl] {p.stderr.strip()}")
+        # 参数写错之类的硬错误，重试也没用
+        raise RuntimeError(f"[curl] 退出码 {p.returncode}: {p.stderr.strip()}")
 
     raw = p.stdout
     parts = raw.rsplit("__HTTP__", 1)

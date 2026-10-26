@@ -76,6 +76,7 @@ reverse-anyviewc/
 │   ├── submit.py            # 保存 / 编译 / 判题（单题）
 │   ├── exam_drive.py        # 批量拟人化驱动
 │   ├── run_submit.sh        # 一键启动：间隔抖动 + 单实例锁 + 日志 + status/stop
+│   ├── triage.py            # 失败题分诊：只编译不判题，洗净编译器原文
 │   └── doctor.py            # 环境自检
 ├── .githooks/
 │   └── pre-commit           # 兜底：local-data/ 只允许 README.md 入库
@@ -151,7 +152,8 @@ $PY tools/submit.py --eid <eid> --all
 | `scan_templates.py` | 统计模板形态分布，用于设计拼装规则 | 无 |
 | `assemble.py` | 按函数名替换函数体，辅助函数前置插入 | 无 |
 | `answers_build.py` | 批量产出答案文件并做语法校验 | 无 |
-| `submit.py` | 保存 / 编译 / 判题三件套 + 状态查询 | curl |
+| `submit.py` | 保存 / 编译 / 判题三件套 + 状态查询；传输层失败自动重试并回落直连 | curl |
+| `triage.py` | 失败题分诊：批量只编译不判题，区分「编译不过」与「判题输出不对」 | curl |
 | `exam_drive.py` | 按拟人节奏批量跑，台账支持断点续跑 | curl |
 | `doctor.py` | 10 项环境自检，只读 | curl + urllib |
 
@@ -168,6 +170,12 @@ $PY tools/submit.py --eid <eid> --all
 判题成功的唯一判据是 `runGroup` 返回 `{"code":200,"data":{"passed":true}}`。前端**没有**「标记通过」接口，工具栏也**没有**「提交」按钮 —— 只有编译 / 运行 / 调试 / 保存。
 
 其余坑（保存异步落库延迟、16 位整型环境、平台 `allinclude.h` 自带 typedef、WAF TLS 指纹、单点登录互踢）逐条记在 [docs/接口契约.md](docs/接口契约.md) 与 SOP 的故障排查表里。
+
+### 两条最贵的教训
+
+**拼装必须幂等。** 提交过一次之后，平台里的 `stuCode` 就是你自己写进去的代码。如果拼装时把平台当前模板当骨架，下次就会把自己的旧代码当输入，前置 typedef / 辅助函数插两遍 —— 编译期炸 `redefinition`。本仓库的 `build_one()` 固定用**首次抓取时存档的原始模板**，并在插入前置片段时按符号去重。
+
+**别自己声明平台提供的函数。** 题目写「以下函数可以直接调用」的，连原型都不要写。手写一份形参按值的声明去调平台按引用的实现，得到的不是编译错误，而是 `undefined reference`。
 
 ## 文档
 

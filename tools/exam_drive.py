@@ -176,6 +176,26 @@ def fetch_orders(questions, only_eid=None, limit=None, redo=False, record=None,
     return out, skipped
 
 
+def brief_error(error_order):
+    """把 runGroup 的 errorOrder 压成一句话，直接写进台账。
+
+    这是「编译过但判题不过」的唯一可靠线索：平台逐用例给出
+    「正确结果 vs 你的结果」的字节级对照。以前要手工 dump 才知道，
+    现在让它自动进台账，失败原因一眼可见。
+    """
+    if not error_order:
+        return ""
+    # errorOrder 的 key 是用例序号，取第一个失败的
+    key = sorted(error_order, key=lambda x: (len(str(x)), str(x)))[0]
+    txt = str(error_order[key])
+    txt = re.sub(r"<br\s*/?>", " | ", txt)
+    txt = re.sub(r"&nbsp;", " ", txt)
+    txt = re.sub(r"<[^>]+>", "", txt)
+    txt = re.sub(r"\s*\|\s*(\||)+", " | ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip(" |")
+    return txt[:1000]       # 留长一点：失败后要靠它定位，截太狠等于没记
+
+
 def do_one(tk, eid, answers, extras, min_wait, max_wait, quiet=False):
     """对一题走完「打开 → 停顿 → 保存 → 编译 → 判题」。"""
     # 1) 打开题目：取题干接口，同时拿到题目元信息
@@ -232,6 +252,7 @@ def do_one(tk, eid, answers, extras, min_wait, max_wait, quiet=False):
         "passed": passed,
         "wait": wait,
         "runRight": d.get("runRightCount"),
+        "reason": "" if passed else brief_error(d.get("errorOrder")),
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -297,17 +318,53 @@ def main():
     done = ok = 0
     consec_fail = 0        # 连续未通过
     consec_nosave = 0      # 连续连「保存」都失败（基本是 token 挂了，不是答案错）
+    consec_net = 0         # 连续网络失败（与答案无关）
     t_start = time.time()
     for idx, q in enumerate(orders, 1):
         eid = str(q["eid"])
         print(f"\n[{idx}/{len(orders)}] {q['pname']}  {q['course']} 第{q['chapter']}章  eid={eid}",
               flush=True)
-        try:
-            r = do_one(tk, eid, answers, extras, a.min_wait, a.max_wait)
-        except SystemExit:
-            raise
-        except Exception as exc:                       # noqa: BLE001
-            r = {"eid": eid, "pname": q["pname"], "ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+        # 网络抖动不该把整批打死，也不该被记成「答案错」。单题内先重试两次，
+        # 间隔 60s / 180s；仍然失败就记成 network 并继续下一题，最后统一复跑。
+        r = None
+        for net_try in range(3):
+            try:
+                r = do_one(tk, eid, answers, extras, a.min_wait, a.max_wait)
+                break
+            except S.NetworkError as exc:
+                consec_net += 1
+                if net_try == 2:
+                    r = {"eid": eid, "pname": q["pname"], "ok": False,
+                         "reason": f"network: {exc}", "network": True,
+                         "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+                    print(f"    网络失败，已重试 3 次，跳过待复跑：{exc}", flush=True)
+                    break
+                cooldown = 60 * (net_try + 1)
+                print(f"    网络失败（第 {net_try + 1} 次）：{exc}，{cooldown}s 后重试本题", flush=True)
+                time.sleep(cooldown)
+            except SystemExit:
+                raise
+            except Exception as exc:                       # noqa: BLE001
+                r = {"eid": eid, "pname": q["pname"], "ok": False,
+                     "reason": f"{type(exc).__name__}: {exc}",
+                     "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+                break
+
+        # 网络失败的题不覆盖已有记录，也不计入连续失败（否则会误触发熔断）
+        if r.get("network"):
+            prev = record.get(eid)
+            if not (prev and prev.get("passed")):
+                record[eid] = r
+            save_record(record)
+            done += 1
+            if consec_net >= 6:
+                print(f"\n连续 {consec_net} 次网络失败，网侧不可用。已中止。", flush=True)
+                print("  处理：恢复网络后重跑本脚本，会从断点继续（台账已保存）。", flush=True)
+                break
+            print(f"    进度 {done}/{len(orders)}  通过 {ok}（本题待复跑）", flush=True)
+            continue
+        consec_net = 0
 
         record[eid] = r
         save_record(record)
@@ -340,7 +397,15 @@ def main():
             break
 
     print("\n" + "=" * 64)
-    print(f"结束：{done} 题，通过 {ok}，失败 {done - ok}")
+    net_left = [k for k, v in record.items() if v.get("network")]
+    bad_left = [k for k, v in record.items() if not v.get("passed") and not v.get("network")]
+    print(f"结束：{done} 题，通过 {ok}，未通过 {done - ok}"
+          f"（其中网络失败 {len(net_left)}）")
+    if net_left:
+        print(f"  网络失败待复跑 {len(net_left)} 题：{', '.join(net_left[:12])}")
+    if bad_left:
+        print(f"  答案未通过 {len(bad_left)} 题：{', '.join(bad_left[:12])}")
+        print("  逐题看台账 reason 字段（已内置 errorOrder 摘要），修完重跑即可")
     print(f"记录：{RECORD}")
 
 
