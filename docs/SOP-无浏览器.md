@@ -98,10 +98,18 @@ $PY tools/doctor.py
 ### S1 · 登录取 token
 
 ```bash
+# 方式 A（推荐）：账号密码写进 <数据根>/.cred，两行式；该文件已被 git 忽略、权限 600
+printf '%s\n%s\n' '<学号>' '<密码>' > local-data/.cred && chmod 600 local-data/.cred
+$PY tools/login.py
+
+# 方式 B：走环境变量（不落盘）
 ANYVIEW_USER=<学号> ANYVIEW_PASS='<密码>' $PY tools/login.py
 ```
 
 预期：`登录成功: <姓名>` + `TOKEN_LEN=<n> (已写入 <数据根>/.token, 权限 600)`
+
+**注意两个密码不是一套**：`anyviewc` 有自己的密码，和「GDUT 统一认证中心」的密码不同。
+用统一认证密码去登会得到 `登录失败 code=1 用户名或密码错误`，别误判成账号被锁。
 
 **铁律**：平台是单点登录，**同一账号只能有一个活 token**。
 在浏览器里登录一次，脚本的 token 立刻废（报 `403 当前用户状态失效`）；反之亦然。

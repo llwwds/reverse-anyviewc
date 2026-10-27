@@ -121,7 +121,9 @@ mkdir -p local-data
 $PY tools/doctor.py
 
 # 4. 登录（token 落在 local-data/.token）
-ANYVIEW_USER=<学号> ANYVIEW_PASS='<密码>' $PY tools/login.py
+#    二选一：环境变量，或写进 local-data/.cred（推荐，两行式：账号 / 密码）
+printf '%s\n%s\n' '<学号>' '<密码>' > local-data/.cred && chmod 600 local-data/.cred
+$PY tools/login.py
 
 # 5. 抓题
 $PY tools/crawl.py
@@ -133,9 +135,12 @@ $PY tools/submit.py --eid <eid> --all
 # 7. 一键批量（每题间隔 60~300 秒抖动，单实例保护，可随时中断续跑）
 ./tools/run_submit.sh --plan      # 先看计划与预估时长
 ./tools/run_submit.sh             # 开跑
+./tools/run_submit.sh --eid 11875442,11875559    # 只补指定题
 ./tools/run_submit.sh --status    # 进度
 ./tools/run_submit.sh --stop      # 停
 ```
+
+`.cred` 和 `.token` 都在 `local-data/` 下，已被 `.gitignore` 与 pre-commit hook 双重拦截，不会进仓库。
 
 完整流程与失败处置见 [docs/SOP-无浏览器.md](docs/SOP-无浏览器.md)。
 
@@ -144,8 +149,8 @@ $PY tools/submit.py --eid <eid> --all
 | 工具 | 作用 | 网络 |
 |---|---|---|
 | `paths.py` | 统一解析数据根与 token 位置 | 无 |
-| `run_submit.sh` | 一键启动批量提交；间隔抖动、单实例锁、日志、状态查询 | 间接 |
-| `login.py` | RSA/PKCS1v15 加密登录，写 token（权限 600） | curl |
+| `run_submit.sh` | 一键启动批量提交；间隔抖动、单实例锁、日志、`--eid` 指定题、状态查询 | 间接 |
+| `login.py` | RSA/PKCS1v15 加密登录，写 token（权限 600）；账号密码可放 `<数据根>/.cred` | curl |
 | `crawl.py` | 拉课程表 → 题目目录 → 逐题详情，增量可重跑 | urllib |
 | `enrich.py` | 补 `difficulty` / `exerciseStatus` / `accumTime` 等 | urllib |
 | `render.py` | 渲染成 `index.md` / `全题库.md` / `题库.json` | 无 |
@@ -171,11 +176,13 @@ $PY tools/submit.py --eid <eid> --all
 
 其余坑（保存异步落库延迟、16 位整型环境、平台 `allinclude.h` 自带 typedef、WAF TLS 指纹、单点登录互踢）逐条记在 [docs/接口契约.md](docs/接口契约.md) 与 SOP 的故障排查表里。
 
-### 两条最贵的教训
+### 三条最贵的教训
 
 **拼装必须幂等。** 提交过一次之后，平台里的 `stuCode` 就是你自己写进去的代码。如果拼装时把平台当前模板当骨架，下次就会把自己的旧代码当输入，前置 typedef / 辅助函数插两遍 —— 编译期炸 `redefinition`。本仓库的 `build_one()` 固定用**首次抓取时存档的原始模板**，并在插入前置片段时按符号去重。
 
 **别自己声明平台提供的函数。** 题目写「以下函数可以直接调用」的，连原型都不要写。手写一份形参按值的声明去调平台按引用的实现，得到的不是编译错误，而是 `undefined reference`。
+
+**「跳过」比「做错」更危险。** 做错会被判题打回来，跳过则安安静静躺在那里，台账上一个字都不提它。`exam_drive.py` 的跳过判据（「模板里已有同名函数」= 用户的历史代码）曾把平台给的半成品骨架和 `return ...;` 占位符一并放过，导致统计出「126/126 全绿」而实际还有 4 题没做。现在判空壳时连 `...` 一起认，并要求「确实做过」的证据（`exerciseStatus=2` / `pass` / `accumTime>0`）才允许跳过。凡是按规则放过的分支，都要有一条独立复核再数一遍。
 
 ## 文档
 

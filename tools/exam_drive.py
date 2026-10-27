@@ -107,30 +107,66 @@ def plan_wait(src, min_wait, max_wait):
 
 
 # 平台塞的占位返回，形如 `return NULL; //Temporary code. Modify it if necessary.`
-# 这不算「学生写过代码」，判空壳时必须放行。
+# 也有题目的占位是裸省略号 `return ...;`（C 里编译不过，纯占位）。
+# 这些都不算「学生写过代码」，判空壳时必须放行。
 PLACEHOLDER = re.compile(
-    r"^return\s*(?:NULL|nullptr|0|-1|ERROR|FALSE|TRUE|'\s*\\0\s*'|\"\"|\)?\s*;)?\s*;?$")
+    r"^return\s*(?:NULL|nullptr|0|-1|ERROR|FALSE|TRUE|\.\.\."
+    r"|'\s*\\0\s*'|\"\"|\)?\s*;)?\s*;?$")
+
+
+def _template_of(eid):
+    p = ROOT / "原始数据" / f"q_{eid}.json"
+    if not p.exists():
+        return None, None
+    try:
+        blob = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:                                  # noqa: BLE001
+        return None, None
+    det = blob.get("detail") or {}
+    b64 = det.get("stuCode") or ""
+    if not b64:
+        return None, blob
+    try:
+        return base64.b64decode(b64).decode("utf-8", "replace"), blob
+    except Exception:                                  # noqa: BLE001
+        return None, blob
+
+
+def has_engagement(blob):
+    """这个人到底碰过这道题吗？
+
+    只看模板里有没有代码不足以说明「这是他写的」——平台和教材都会给半成品骨架
+    （例如直接插入排序的完整循环，只留计数让你补）。所以再加一道证据：
+    exerciseStatus 已完成 / pass 为真 / accumTime 大于 0（他进过页面跑过）。
+    三者皆无 = 这道题他从没动过，模板里的代码只能是给定骨架，可以放心覆盖。
+    """
+    if not isinstance(blob, dict):
+        return False
+    cat = blob.get("catalog") or {}
+    prg = blob.get("progress") or {}
+    status = prg.get("exerciseStatus", cat.get("exerciseStatus"))
+    if str(status) == "2" or cat.get("pass") is True or prg.get("pass") is True:
+        return True
+    try:
+        return int(cat.get("accumTime") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def template_filled_by(eid):
-    """模板里是否已经有实义代码（= 以前自己提交过）。
+    """模板里是否已经有实义代码 (且不是平台给的骨架)。
 
-    判据：至少有一个函数的函数体，去掉注释后还有实义内容。
+    判据：至少有一个函数的函数体，去掉注释后还有实义内容 —— **并且**
+    这道题确实被他做过（见 has_engagement）。
     以下都算空壳：`{   // Add your code here\\n\\n\\n}`、
-    `{ return NULL; //Temporary code }`。
+    `{ return NULL; //Temporary code }`、`{ return ...; }`。
     返回函数名，空壳返回 None。
     """
-    p = ROOT / "原始数据" / f"q_{eid}.json"
-    if not p.exists():
+    template, blob = _template_of(eid)
+    if not template:
         return None
-    try:
-        blob = json.loads(p.read_text(encoding="utf-8"))
-        det = blob.get("detail") or {}
-        b64 = det.get("stuCode") or ""
-        if not b64:
-            return None
-        template = base64.b64decode(b64).decode("utf-8", "replace")
-    except Exception:                                  # noqa: BLE001
+    if not has_engagement(blob):
+        # 从没跑过、也没通过，模板里的代码只能是给定的骨架 / 半成品
         return None
 
     for f in A.find_functions(template):
@@ -154,13 +190,19 @@ def fetch_orders(questions, only_eid=None, limit=None, redo=False, record=None,
     模板里就留下了我们自己的代码。若只看模板，这类题会被当成「你以前写过」
     永久跳过，失败的题再也没有重试机会。所以**台账里有记录的一律不跳过**，
     只跳过「模板有代码 且 我们从未碰过」的题。
+
+    而「模板有代码」本身还要过 has_engagement 这一关：从没做过、没跑过的题，
+    模板里的代码只能是平台/教材给的骨架，不该当成他的历史成果留着。
     """
     record = record or {}
+    only = None
+    if only_eid:
+        only = {s.strip() for s in str(only_eid).split(",") if s.strip()}
     out = []
     skipped = []
     for q in questions:
         eid = str(q["eid"])
-        if only_eid and eid != str(only_eid):
+        if only and eid not in only:
             continue
         rec = record.get(eid) or {}
         if not redo and rec.get("passed"):
@@ -273,7 +315,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", action="store_true", help="只打印计划")
     ap.add_argument("--run", action="store_true", help="真正执行")
-    ap.add_argument("--eid")
+    ap.add_argument("--eid", help="只做指定题，逗号分隔可多选：--eid 11875442,11875559")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--redo", action="store_true", help="连已通过的也重做")
     ap.add_argument("--include-existing", action="store_true",

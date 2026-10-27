@@ -13,6 +13,7 @@ AnyView 登录 -> 拿 token
 
 用法:
     ANYVIEW_USER=学号 ANYVIEW_PASS=密码 python3 login.py
+    # 或者把账号密码写进 <数据根>/.cred（两行式，或 user=/pass=），直接 python3 login.py
 仅把 token 写入数据根的 .token（权限 600），不落盘账号密码。
 数据根位置见 paths.py（默认 ~/Downloads/AnyView题库，可用 ANYVIEW_DATA_DIR 覆盖）。
 """
@@ -54,11 +55,59 @@ def pem_from_der_b64(b64):
     return f"-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----"
 
 
+def read_cred_file():
+    """从 <数据根>/.cred 读账号密码（该文件已被 .gitignore 掉，权限 600）。
+
+    格式二选一，怎么顺手怎么来：
+
+        # 两行式
+        3122xxxxxx
+        你的密码
+
+        # 或 key=value 式
+        user=3122xxxxxx
+        pass=你的密码
+
+    加这个入口纯粹是为了省掉每次 `ANYVIEW_USER=... ANYVIEW_PASS=...` 的长命令行；
+    环境变量优先级更高，两者都有时以环境变量为准。
+    """
+    p = paths.data_root() / ".cred"
+    if not p.exists():
+        return "", ""
+    user = pwd = ""
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if "=" in s:
+                k, v = s.split("=", 1)
+                k = k.strip().lower()
+                if k in ("user", "username", "学号", "账号"):
+                    user = v.strip()
+                elif k in ("pass", "password", "密码"):
+                    pwd = v.rstrip("\n")
+                continue
+            if not user:
+                user = s
+            elif not pwd:
+                pwd = s
+    except OSError:
+        return "", ""
+    return user, pwd
+
+
 def main():
     user = os.environ.get("ANYVIEW_USER", "").strip()
     pwd = os.environ.get("ANYVIEW_PASS", "")
     if not user or not pwd:
-        sys.exit("需要 ANYVIEW_USER / ANYVIEW_PASS 环境变量")
+        fu, fp = read_cred_file()
+        user = user or fu
+        pwd = pwd or fp
+        if user and pwd:
+            print(f"[0/3] 账号密码取自 {paths.data_root() / '.cred'}")
+    if not user or not pwd:
+        sys.exit("需要 ANYVIEW_USER / ANYVIEW_PASS 环境变量，或 <数据根>/.cred 文件")
 
     # 1. 公钥
     j = http([f"{BASE}/user-service/rsa"])

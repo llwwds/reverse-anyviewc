@@ -12,6 +12,7 @@
 #   --min 60            题间停顿下限（秒）
 #   --max 300           题间停顿上限（秒）
 #   --limit 5           只跑前 N 题（试跑用）
+#   --eid 11875442,11875559   只跑指定题（逗号分隔可多选）
 #   --include-existing  连模板里已有历史代码的题也做（默认跳过）
 #
 # 单实例靠 local-data/.drive.lock 的内核文件锁保证：进程怎么死锁都会自动释放，
@@ -26,10 +27,11 @@ cd "$REPO" || exit 1
 MIN_WAIT=60
 MAX_WAIT=300
 LIMIT=0
+EIDS=""
 MODE="run"
 INCLUDE_EXISTING=0        # 不用数组：bash 3.2 在 set -u 下取空数组长度会报 unbound variable
 
-usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
         --min)    MIN_WAIT="${2:?--min 需要一个数字}"; shift 2 ;;
         --max)    MAX_WAIT="${2:?--max 需要一个数字}"; shift 2 ;;
         --limit)  LIMIT="${2:?--limit 需要一个数字}"; shift 2 ;;
+        --eid)    EIDS="${2:?--eid 需要题号}"; shift 2 ;;
         --include-existing) INCLUDE_EXISTING=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "未知参数：$1（-h 看用法）" >&2; exit 2 ;;
@@ -189,10 +192,14 @@ echo "自检：通过"
 
 CMD=("$PY" tools/exam_drive.py --run --min-wait "$MIN_WAIT" --max-wait "$MAX_WAIT")
 [ "$LIMIT" -gt 0 ] && CMD+=(--limit "$LIMIT")
+[ -n "$EIDS" ] && CMD+=(--eid "$EIDS")
 [ "$INCLUDE_EXISTING" -eq 1 ] && CMD+=(--include-existing)
 
 if [ "$MODE" = "plan" ]; then
-    exec "$PY" tools/exam_drive.py --plan --min-wait "$MIN_WAIT" --max-wait "$MAX_WAIT"
+    PLAN_CMD=("$PY" tools/exam_drive.py --plan --min-wait "$MIN_WAIT" --max-wait "$MAX_WAIT")
+    [ "$LIMIT" -gt 0 ] && PLAN_CMD+=(--limit "$LIMIT")
+    [ -n "$EIDS" ] && PLAN_CMD+=(--eid "$EIDS")
+    exec "${PLAN_CMD[@]}"
 fi
 
 LOG="$LOG_DIR/run_$(date +%Y%m%d_%H%M%S).log"
