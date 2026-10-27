@@ -42,6 +42,7 @@
 | 抓题目录 / 题干 | Python `urllib` | 否 |
 | 答案生成 / 源码拼装 | 无网络 | 否 |
 | 保存 / 编译 / 运行判题 | curl 子进程 | 否 |
+| 实验课工程编译 / 运行 / 子题提交 | curl 子进程（JSON） | 否 |
 | 批量拟人化驱动 | curl（复用 submit） | 否 |
 | 环境自检 | curl + urllib | 否 |
 
@@ -52,7 +53,7 @@ grep -rln "ego\|browser\|page\.\|cdp\|playwright\|puppeteer" --include="*.py" . 
 # → 0
 ```
 
-浏览器在这个项目里只干过两件**非运行时**的事：用 CDP 抓真实请求做逆向、在 WAF 拦死时当应急隧道。两件都已被「写成常量」化解 —— 详见 [docs/SOP-无浏览器.md](docs/SOP-无浏览器.md) §2。
+浏览器在这个项目里只干过三件**非运行时**的事：用 CDP 抓真实请求做逆向、在 WAF 拦死时当应急隧道、在真浏览器里读 `performance.getEntriesByType("resource")` 拿 webpack 分包的真实文件名。三件都已被「写成常量」化解 —— 详见 [docs/SOP-无浏览器.md](docs/SOP-无浏览器.md) §2。
 
 ## 仓库布局
 
@@ -61,7 +62,7 @@ reverse-anyviewc/
 ├── README.md
 ├── docs/
 │   ├── SOP-无浏览器.md      # 主体：五阶段 SOP + 依赖边界 + 降级链
-│   └── 接口契约.md          # 三个写接口的 Content-Type / 字段 / 响应
+│   └── 接口契约.md          # 理论课三写接口 + 实验课 lab 子系统的 Content-Type / 字段 / 响应
 ├── local-data/              # 本地数据（.gitignore 排除，只留 README 作说明）
 │   └── README.md            # 数据目录约定：每个子目录放什么
 ├── tools/
@@ -75,6 +76,8 @@ reverse-anyviewc/
 │   ├── answers_build.py     # 批量生成答案文件
 │   ├── submit.py            # 保存 / 编译 / 判题（单题）
 │   ├── exam_drive.py        # 批量拟人化驱动
+│   ├── lab.py               # 实验课：多文件工程的抓取 / 编译 / 运行 / 保存 / 子题
+│   ├── labtest.sh           # 实验课本地编译 + 限时运行（不联平台，先自己验一遍）
 │   ├── run_submit.sh        # 一键启动：间隔抖动 + 单实例锁 + 日志 + status/stop
 │   ├── triage.py            # 失败题分诊：只编译不判题，洗净编译器原文
 │   └── doctor.py            # 环境自检
@@ -138,6 +141,15 @@ $PY tools/submit.py --eid <eid> --all
 ./tools/run_submit.sh --eid 11875442,11875559    # 只补指定题
 ./tools/run_submit.sh --status    # 进度
 ./tools/run_submit.sh --stop      # 停
+
+# 8. 实验课（多文件工程，走另一套接口，见下文「关键发现」）
+$PY tools/lab.py dump                       # 21 个工程 → local-data/实验答案/<eid>/
+bash tools/labtest.sh 141443                # 本地编译 + 6 秒限时运行，先自己验一遍
+$PY tools/lab.py compile 141443             # 平台编译
+$PY tools/lab.py run 141443                 # 平台运行，比对 output 与本文件注释里的预期
+$PY tools/lab.py save 141443                # 保存并回读逐字节校验
+$PY tools/lab.py submit-practice 141443     # 提交子题（读同目录 _answers.json）
+$PY tools/lab.py check --deep               # 完成度总览
 ```
 
 `.cred` 和 `.token` 都在 `local-data/` 下，已被 `.gitignore` 与 pre-commit hook 双重拦截，不会进仓库。
@@ -160,6 +172,8 @@ $PY tools/submit.py --eid <eid> --all
 | `submit.py` | 保存 / 编译 / 判题三件套 + 状态查询；传输层失败自动重试并回落直连 | curl |
 | `triage.py` | 失败题分诊：批量只编译不判题；`--errors` 直接读平台留存的完整 errorOrder（只 GET，不消耗判题） | curl |
 | `exam_drive.py` | 按拟人节奏批量跑，台账支持断点续跑 | curl |
+| `lab.py` | 实验课（多文件工程）全链路：`dump` / `compile` / `run` / `save` / `practice` / `submit-practice` / `check` | curl |
+| `labtest.sh` | 实验课本地验证：`clang++` 全量编译 + 6 秒限时运行，退出码区分编译失败 / 超时 | 无 |
 | `doctor.py` | 10 项环境自检，只读 | curl + urllib |
 
 ## 关键发现
@@ -176,13 +190,38 @@ $PY tools/submit.py --eid <eid> --all
 
 其余坑（保存异步落库延迟、16 位整型环境、平台 `allinclude.h` 自带 typedef、WAF TLS 指纹、单点登录互踢）逐条记在 [docs/接口契约.md](docs/接口契约.md) 与 SOP 的故障排查表里。
 
-### 三条最贵的教训
+### 实验课不是「理论课换参数」，是另一套子系统
+
+同一门课里，理论课和实验课的接口、载荷、状态机全都不共用。把它们当成一个系统去猜，会连续踩四个坑：
+
+| | 理论课（scheme 465，`questionType=1`） | 实验课（scheme 466，`questionType=3`） |
+|---|---|---|
+| 形态 | 单文件 `stuCode` | 多文件工程（3~7 个 `.cpp/.h`） |
+| 取题 | `/scheme-service/scheme/list/student/{eid}` | `/scheme-service/scheme/list/student/**lab**/{eid}` |
+| 编译 | `/gdb-service/code/compile`（form） | `/gdb-service/code/**lab**/compile`（**JSON**） |
+| 运行判题 | `/gdb-service/code/runGroup`（multipart） | `/gdb-service/code/**lab**/run`（**JSON**） |
+| 保存 | `/gdb-service/exercise/saveStudentCode` | `/gdb-service/exercise/**lab**/saveCode` |
+| 子题 | 无 | `/exam-service/lab/practice/*`（每个实验 3~10 道） |
+
+四个坑，每个都能让你以为「接口写错了」或「代码没生效」：
+
+**`labExerciseId` 必须等于 `eid`，不是 `questionId`。** 传错时后端回 `404 {"error":"Not Found","path":"/code/lab/compile"}` —— 长得和「路由不存在」一模一样，实际是参数不匹配。跟理论课三个写接口那个 404 陷阱同源：**这个网关习惯用 404 表达「你的请求我不认识」**。
+
+**实验课的 `passed` 恒为 `false`。** `lab/run` 会照常返回 `output`、`exception`、`end`，唯独 `passed` 没有参考答案可比，永远是 false。把 `completes` 里的标识符全塞进注释也不会变 true。判据只能是「编译成功 + output 与 Main.cpp 注释里的预期一致」。
+
+**子题的 `score` / `isCorrect` 恒为 0。** 选择题作答与 `pqd.optionSolution` 逐位相同时依然是 0 —— 这个字段要等教师批改。判据只能是「有提交记录且 `isTempSaved=false`」。
+
+**实验课的状态列永远是「—」，这不是没做完。** `catalog/list?schemeId=466` 的每一项只有 10 个字段（`difficulty/eid/pname/pmemo/maximumSimilarity/comment/accumTime/questionType/chapName/commentStatus`），没有 `pass`，也没有理论课那个 `kind`；课程列表里实验课的 `passNum` 恒为 `null`（理论课是 131/131）。前端渲染是 `row.pass ? ✓ : row.accumTime ? ✎ : —`，没有 `pass` 就一定落到兜底分支。
+
+### 四条最贵的教训
 
 **拼装必须幂等。** 提交过一次之后，平台里的 `stuCode` 就是你自己写进去的代码。如果拼装时把平台当前模板当骨架，下次就会把自己的旧代码当输入，前置 typedef / 辅助函数插两遍 —— 编译期炸 `redefinition`。本仓库的 `build_one()` 固定用**首次抓取时存档的原始模板**，并在插入前置片段时按符号去重。
 
 **别自己声明平台提供的函数。** 题目写「以下函数可以直接调用」的，连原型都不要写。手写一份形参按值的声明去调平台按引用的实现，得到的不是编译错误，而是 `undefined reference`。
 
 **「跳过」比「做错」更危险。** 做错会被判题打回来，跳过则安安静静躺在那里，台账上一个字都不提它。`exam_drive.py` 的跳过判据（「模板里已有同名函数」= 用户的历史代码）曾把平台给的半成品骨架和 `return ...;` 占位符一并放过，导致统计出「126/126 全绿」而实际还有 4 题没做。现在判空壳时连 `...` 一起认，并要求「确实做过」的证据（`exerciseStatus=2` / `pass` / `accumTime>0`）才允许跳过。凡是按规则放过的分支，都要有一条独立复核再数一遍。
+
+**先确认「完成」在服务端有没有落点，再决定做什么。** 实验课这边，21 个工程、148 处空位、145 道子题全部落地之后才发现：`catalog/list` 对实验课压根没有状态字段，页面上的「未完成」永远不会变。如果一开始先查一眼返回字段表，就不会先把子题提交一轮、再回头怀疑「是不是没生效」。**先读字段表，再读文档，最后才动手。**
 
 ## 文档
 
